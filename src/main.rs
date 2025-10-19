@@ -1,5 +1,6 @@
 use std::env;
 use std::process;
+use std::time::Instant;
 
 mod command;
 mod prompt;
@@ -34,8 +35,12 @@ fn main() {
         print_version();
         process::exit(0);
     }
+    let start = Instant::now();
+    
+    let mut shell = shell::Shell::new();
+    
+    eprintln!("DEBUG: Startup took {:?}", start.elapsed());
+    
+    shell.run();
 
-    // Normal interactive shell startup
-    let mut sh = shell::Shell::new();
-    sh.run();
 }
