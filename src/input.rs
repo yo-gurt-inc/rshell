@@ -1,13 +1,14 @@
+use crate::history::History;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    execute,
+    style::Print,
     terminal::{self, ClearType},
-    ExecutableCommand,
 };
 use std::io::{self, Write};
 use std::sync::Once;
 use std::fs;
-use std::path::Path;
 use std::env;
 
 #[cfg(unix)]
@@ -42,6 +43,7 @@ impl Drop for RawModeGuard {
 pub struct LineEditor {
     buffer: String,
     cursor_pos: usize,
+    history_index: Option<usize>,
 }
 
 impl LineEditor {
@@ -49,178 +51,104 @@ impl LineEditor {
         Self {
             buffer: String::new(),
             cursor_pos: 0,
+            history_index: None,
         }
     }
 
-    pub fn read_line(&mut self, prompt: &str, history: &mut crate::history::History) -> io::Result<String> {
-        // enter raw mode and ensure it will be restored
-        let raw = RawModeGuard::enter()?; // keep ownership to drop explicitly later
-        let mut stdout = io::stdout();
-
+    pub fn read_line(&mut self, prompt: &str, history: &mut History) -> io::Result<String> {
         self.buffer.clear();
         self.cursor_pos = 0;
+        self.history_index = None;
 
-        // ensure line is cleared and prompt is printed at column 0
-        stdout.execute(cursor::MoveToColumn(0))?;
-        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-        write!(stdout, "{}", prompt)?;
+        let mut stdout = io::stdout();
+        let _guard = RawModeGuard::enter()?;
+
+        execute!(stdout, Print(prompt))?;
         stdout.flush()?;
 
         loop {
             if let Event::Key(key_event) = event::read()? {
                 match key_event {
-                    // Enter - submit (don't print newline while still in raw mode)
+                    // Enter - submit line
                     KeyEvent {
                         code: KeyCode::Enter,
                         ..
                     } => {
+                        execute!(stdout, Print("\r\n"))?;
                         break;
                     }
 
-                    // Tab - attempt completion
+                    // Backspace
                     KeyEvent {
-                        code: KeyCode::Tab,
-                        ..
-                    } => {
-                        if self.handle_tab_completion(prompt)? {
-                            // buffer changed, redraw
-                            self.redraw(prompt)?;
-                        }
-                    }
-
-
-                    // Ctrl+C - cancel
-                    KeyEvent {
-                        code: KeyCode::Char('c'),
-                        modifiers: KeyModifiers::CONTROL,
-                        ..
-                    } => {
-                        // process::exit bypasses Drop, so restore first
-                        let _ = terminal::disable_raw_mode();
-                        std::process::exit(0);
-                    }
-
-                    // Ctrl+D - EOF / exit if buffer empty
-                    KeyEvent {
-                        code: KeyCode::Char('d'),
-                        modifiers: KeyModifiers::CONTROL,
-                        ..
-                    } => {
-                        if self.buffer.is_empty() {
-                            // restore then exit
-                            let _ = terminal::disable_raw_mode();
-                            println!();
-                            std::process::exit(0);
-                        }
-                    }
-
-                    // Ctrl+A - move to start
-                    KeyEvent {
-                        code: KeyCode::Char('a'),
-                        modifiers: KeyModifiers::CONTROL,
-                        ..
-                    } => {
-                        self.cursor_pos = 0;
-                        self.redraw(prompt)?;
-                    }
-
-                    // Ctrl+E - move to end
-                    KeyEvent {
-                        code: KeyCode::Char('e'),
-                        modifiers: KeyModifiers::CONTROL,
-                        ..
-                    } => {
-                        self.cursor_pos = self.buffer.len();
-                        self.redraw(prompt)?;
-                    }
-
-                    // Ctrl+K - delete from cursor to end
-                    KeyEvent {
-                        code: KeyCode::Char('k'),
-                        modifiers: KeyModifiers::CONTROL,
-                        ..
-                    } => {
-                        self.buffer.truncate(self.cursor_pos);
-                        self.redraw(prompt)?;
-                    }
-
-                    // Ctrl+U - delete from cursor to start
-                    KeyEvent {
-                        code: KeyCode::Char('u'),
-                        modifiers: KeyModifiers::CONTROL,
-                        ..
-                    } => {
-                        self.buffer.drain(..self.cursor_pos);
-                        self.cursor_pos = 0;
-                        self.redraw(prompt)?;
-                    }
-
-                    // Ctrl+W - delete word backward
-                    KeyEvent {
-                        code: KeyCode::Char('w'),
-                        modifiers: KeyModifiers::CONTROL,
+                        code: KeyCode::Backspace,
                         ..
                     } => {
                         if self.cursor_pos > 0 {
-                            let start = self.buffer[..self.cursor_pos]
-                                .rfind(|c: char| c.is_whitespace())
-                                .map(|i| i + 1)
-                                .unwrap_or(0);
-                            self.buffer.drain(start..self.cursor_pos);
-                            self.cursor_pos = start;
+                            self.cursor_pos -= 1;
+                            self.buffer.remove(self.cursor_pos);
                             self.redraw(prompt)?;
                         }
                     }
 
-                    // Arrow Up - previous history
+                    // Delete
                     KeyEvent {
-                        code: KeyCode::Up,
+                        code: KeyCode::Delete,
                         ..
                     } => {
-                        if let Some(cmd) = history.previous() {
-                            self.buffer = cmd.clone();
-                            self.cursor_pos = self.buffer.len();
+                        if self.cursor_pos < self.buffer.len() {
+                            self.buffer.remove(self.cursor_pos);
                             self.redraw(prompt)?;
                         }
                     }
 
-                    // Arrow Down - next history
-                    KeyEvent {
-                        code: KeyCode::Down,
-                        ..
-                    } => {
-                        if let Some(cmd) = history.next() {
-                            self.buffer = cmd.clone();
-                            self.cursor_pos = self.buffer.len();
-                            self.redraw(prompt)?;
-                        } else {
-                            self.buffer.clear();
-                            self.cursor_pos = 0;
-                            self.redraw(prompt)?;
-                        }
-                    }
-
-                    // Arrow Left
+                    // Left arrow
                     KeyEvent {
                         code: KeyCode::Left,
                         ..
                     } => {
                         if self.cursor_pos > 0 {
                             self.cursor_pos -= 1;
-                            stdout.execute(cursor::MoveLeft(1))?;
-                            stdout.flush()?;
+                            execute!(stdout, cursor::MoveLeft(1))?;
                         }
                     }
 
-                    // Arrow Right
+                    // Right arrow
                     KeyEvent {
                         code: KeyCode::Right,
                         ..
                     } => {
                         if self.cursor_pos < self.buffer.len() {
                             self.cursor_pos += 1;
-                            stdout.execute(cursor::MoveRight(1))?;
-                            stdout.flush()?;
+                            execute!(stdout, cursor::MoveRight(1))?;
+                        }
+                    }
+
+                    // Up arrow - previous history
+                    KeyEvent {
+                        code: KeyCode::Up,
+                        ..
+                    } => {
+                        if let Some(entry) = history.previous() {
+                            self.buffer = entry.clone();
+                            self.cursor_pos = self.buffer.chars().count();
+                            self.redraw(prompt)?;
+                        }
+                    }
+
+                    // Down arrow - next history
+                    KeyEvent {
+                        code: KeyCode::Down,
+                        ..
+                    } => {
+                        if let Some(entry) = history.next() {
+                            self.buffer = entry.clone();
+                            self.cursor_pos = self.buffer.chars().count();
+                            self.redraw(prompt)?;
+                        } else {
+                            self.buffer.clear();
+                            self.cursor_pos = 0;
+                            self.history_index = None;
+                            self.redraw(prompt)?;
                         }
                     }
 
@@ -238,39 +166,62 @@ impl LineEditor {
                         code: KeyCode::End,
                         ..
                     } => {
-                        self.cursor_pos = self.buffer.len();
+                        self.cursor_pos = self.buffer.chars().count();
                         self.redraw(prompt)?;
                     }
 
-                    // Backspace
+                    // Tab - attempt completion
                     KeyEvent {
-                        code: KeyCode::Backspace,
+                        code: KeyCode::Tab,
                         ..
                     } => {
-                        if self.cursor_pos > 0 {
-                            self.buffer.remove(self.cursor_pos - 1);
-                            self.cursor_pos -= 1;
+                        if self.handle_tab_completion(prompt)? {
+                            // buffer changed, redraw
                             self.redraw(prompt)?;
                         }
                     }
 
-                    // Delete
+                    // Ctrl+C - cancel current line
                     KeyEvent {
-                        code: KeyCode::Delete,
+                        code: KeyCode::Char('c'),
+                        modifiers: KeyModifiers::CONTROL,
                         ..
                     } => {
-                        if self.cursor_pos < self.buffer.len() {
-                            self.buffer.remove(self.cursor_pos);
-                            self.redraw(prompt)?;
-                        }
-                            }
+                        // Clear the current line and start fresh
+                        self.buffer.clear();
+                        self.cursor_pos = 0;
+                        execute!(stdout, Print("\r\n"))?;
+                        break;
+                    }
 
-                    // Regular character
+                    // Ctrl+D - EOF / exit if buffer empty
+                    KeyEvent {
+                        code: KeyCode::Char('d'),
+                        modifiers: KeyModifiers::CONTROL,
+                        ..
+                    } => {
+                        if self.buffer.is_empty() {
+                            // restore then exit
+                            let _ = terminal::disable_raw_mode();
+                            println!();
+                            std::process::exit(0);
+                        }
+                    }
+
+                    // Regular character input
                     KeyEvent {
                         code: KeyCode::Char(c),
+                        modifiers: KeyModifiers::NONE | KeyModifiers::SHIFT,
                         ..
                     } => {
-                        self.buffer.insert(self.cursor_pos, c);
+                        self.buffer.insert(
+                            self.buffer
+                                .char_indices()
+                                .nth(self.cursor_pos)
+                                .map(|(i, _)| i)
+                                .unwrap_or(self.buffer.len()),
+                            c,
+                        );
                         self.cursor_pos += 1;
                         self.redraw(prompt)?;
                     }
@@ -280,39 +231,37 @@ impl LineEditor {
             }
         }
 
-        // drop raw mode before printing the final newline / returning
-        drop(raw);
-        println!();
         Ok(self.buffer.clone())
     }
 
     fn redraw(&self, prompt: &str) -> io::Result<()> {
         let mut stdout = io::stdout();
+        execute!(
+            stdout,
+            cursor::MoveToColumn(0),
+            terminal::Clear(ClearType::CurrentLine),
+            Print(prompt),
+            Print(&self.buffer),
+        )?;
 
-        // Move to start of line and clear
-        stdout.execute(cursor::MoveToColumn(0))?;
-        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-
-        // Print prompt and buffer
-        write!(stdout, "{}{}", prompt, self.buffer)?;
-
-        // Move cursor to correct position
-        let prompt_len = prompt.chars().count() as u16;
-        stdout.execute(cursor::MoveToColumn(prompt_len + self.cursor_pos as u16))?;
+        let prompt_len = prompt.chars().count();
+        let target_col = (prompt_len + self.cursor_pos) as u16;
+        execute!(stdout, cursor::MoveToColumn(target_col))?;
         stdout.flush()?;
-
         Ok(())
     }
 
     // --- completion helpers ------------------------------------------------
 
-    fn handle_tab_completion(&mut self, _prompt: &str) -> io::Result<bool> {
+    fn handle_tab_completion(&mut self, prompt: &str) -> io::Result<bool> {
         // find token start (last whitespace before cursor)
-        let token_start = self.buffer[..self.cursor_pos]
+        let token_start = self.buffer[..self.byte_index_at_char_pos(self.cursor_pos)]
             .rfind(|c: char| c.is_whitespace())
             .map(|i| i + 1)
             .unwrap_or(0);
-        let token = &self.buffer[token_start..self.cursor_pos];
+        
+        let token_start_char = self.buffer[..token_start].chars().count();
+        let token = &self.buffer[token_start..self.byte_index_at_char_pos(self.cursor_pos)];
 
         if token.is_empty() {
             return Ok(false);
@@ -321,26 +270,45 @@ impl LineEditor {
         // if token looks like a path (contains '/'), do path completion
         if token.contains('/') {
             if let Some((dir, prefix)) = split_dir_prefix(token) {
-                let matches = list_dir_matches(&dir, prefix)?;
+                let matches = list_dir_matches(&dir, &prefix)?;
                 if matches.is_empty() {
                     return Ok(false);
                 }
+                
+                // Show all matches if multiple
+                if matches.len() > 1 {
+                    self.show_completions(&matches, prompt)?;
+                }
+                
                 let common = common_prefix(&matches);
-                // insert the remaining part of the common prefix
+                
+                // Replace with common prefix
                 if common.len() > prefix.len() {
-                    let to_insert = &common[prefix.len()..];
-                    self.buffer.insert_str(self.cursor_pos, to_insert);
-                    self.cursor_pos += to_insert.chars().count();
-                    return self.redraw_and_return(true);
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    let full_completion = if dir == "." {
+                        common.clone()
+                    } else {
+                        format!("{}/{}", dir, common)
+                    };
+                    self.buffer.insert_str(token_start, &full_completion);
+                    self.cursor_pos = token_start_char + full_completion.chars().count();
+                    return Ok(true);
                 }
-                // otherwise insert first match remainder
-                let first = &matches[0];
-                if first.len() > prefix.len() {
-                    let to_insert = &first[prefix.len()..];
-                    self.buffer.insert_str(self.cursor_pos, to_insert);
-                    self.cursor_pos += to_insert.chars().count();
-                    return self.redraw_and_return(true);
+                
+                // If only one match, complete it fully
+                if matches.len() == 1 {
+                    let first = &matches[0];
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    let full_completion = if dir == "." {
+                        first.clone()
+                    } else {
+                        format!("{}/{}", dir, first)
+                    };
+                    self.buffer.insert_str(token_start, &full_completion);
+                    self.cursor_pos = token_start_char + full_completion.chars().count();
+                    return Ok(true);
                 }
+                
                 return Ok(false);
             }
         } else {
@@ -351,20 +319,27 @@ impl LineEditor {
                 if matches.is_empty() {
                     return Ok(false);
                 }
+                
+                if matches.len() > 1 {
+                    self.show_completions(&matches, prompt)?;
+                }
+                
                 let common = common_prefix(&matches);
                 if common.len() > token.len() {
-                    let to_insert = &common[token.len()..];
-                    self.buffer.insert_str(self.cursor_pos, to_insert);
-                    self.cursor_pos += to_insert.chars().count();
-                    return self.redraw_and_return(true);
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    self.buffer.insert_str(token_start, &common);
+                    self.cursor_pos = token_start_char + common.chars().count();
+                    return Ok(true);
                 }
-                let first = &matches[0];
-                if first.len() > token.len() {
-                    let to_insert = &first[token.len()..];
-                    self.buffer.insert_str(self.cursor_pos, to_insert);
-                    self.cursor_pos += to_insert.chars().count();
-                    return self.redraw_and_return(true);
+                
+                if matches.len() == 1 {
+                    let first = &matches[0];
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    self.buffer.insert_str(token_start, first);
+                    self.cursor_pos = token_start_char + first.chars().count();
+                    return Ok(true);
                 }
+                
                 return Ok(false);
             } else {
                 // not first token: filename completion in CWD by default
@@ -372,76 +347,127 @@ impl LineEditor {
                 if matches.is_empty() {
                     return Ok(false);
                 }
+                
+                if matches.len() > 1 {
+                    self.show_completions(&matches, prompt)?;
+                }
+                
                 let common = common_prefix(&matches);
                 if common.len() > token.len() {
-                    let to_insert = &common[token.len()..];
-                    self.buffer.insert_str(self.cursor_pos, to_insert);
-                    self.cursor_pos += to_insert.chars().count();
-                    return self.redraw_and_return(true);
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    self.buffer.insert_str(token_start, &common);
+                    self.cursor_pos = token_start_char + common.chars().count();
+                    return Ok(true);
                 }
-                let first = &matches[0];
-                if first.len() > token.len() {
-                    let to_insert = &first[token.len()..];
-                    self.buffer.insert_str(self.cursor_pos, to_insert);
-                    self.cursor_pos += to_insert.chars().count();
-                    return self.redraw_and_return(true);
+                
+                if matches.len() == 1 {
+                    let first = &matches[0];
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    self.buffer.insert_str(token_start, first);
+                    self.cursor_pos = token_start_char + first.chars().count();
+                    return Ok(true);
                 }
+                
                 return Ok(false);
             }
         }
         Ok(false)
     }
 
-    fn redraw_and_return(&self, changed: bool) -> io::Result<bool> {
-        // redraw using an empty prompt here because caller already has prompt;
-        // caller will typically call redraw(prompt) after this, but we can redraw now by returning Ok(true)
-        // to indicate buffer changed; the caller's event loop will redraw next iteration.
-        // For immediate redraw, we do nothing here and let caller call redraw.
-        Ok(changed)
+    fn show_completions(&self, matches: &[String], prompt: &str) -> io::Result<()> {
+        let mut stdout = io::stdout();
+        
+        // Print newline and show all matches in columns
+        execute!(stdout, Print("\r\n"))?;
+        
+        for (i, m) in matches.iter().enumerate() {
+            print!("{:<20}", m);
+            if (i + 1) % 4 == 0 {
+                println!();
+            }
+        }
+        if matches.len() % 4 != 0 {
+            println!();
+        }
+        
+        // Redraw the prompt and current buffer
+        execute!(
+            stdout,
+            Print(prompt),
+            Print(&self.buffer)
+        )?;
+        
+        let prompt_len = prompt.chars().count();
+        let target_col = (prompt_len + self.cursor_pos) as u16;
+        execute!(stdout, cursor::MoveToColumn(target_col))?;
+        stdout.flush()?;
+        
+        Ok(())
+    }
+
+    fn byte_index_at_char_pos(&self, char_pos: usize) -> usize {
+        self.buffer
+            .char_indices()
+            .nth(char_pos)
+            .map(|(i, _)| i)
+            .unwrap_or(self.buffer.len())
     }
 }
 
-// --- filesystem / PATH helpers --------------------------------------------
+// --- helper functions ------------------------------------------------------
 
-fn split_dir_prefix(token: &str) -> Option<(String, &str)> {
-    // token includes at least one '/'
-    if let Some(pos) = token.rfind('/') {
-        let (dir, _pref) = token.split_at(pos + 1);
-        // dir is e.g. "src/" or "/usr/bi"
-        // pref is the part after the last '/'
-        Some((dir.to_string(), &token[pos + 1..]))
+fn split_dir_prefix(path: &str) -> Option<(String, String)> {
+    if let Some(idx) = path.rfind('/') {
+        let dir = if idx == 0 {
+            "/".to_string()
+        } else {
+            path[..idx].to_string()
+        };
+        let prefix = path[idx + 1..].to_string();
+        Some((dir, prefix))
     } else {
         None
     }
 }
 
-fn list_dir_matches(dir_part: &str, prefix: &str) -> io::Result<Vec<String>> {
-    let path = Path::new(dir_part);
-    let dir_to_read = if path.is_absolute() || dir_part.starts_with("./") || dir_part.starts_with("../") {
-        Path::new(dir_part).parent().unwrap_or(Path::new(dir_part)).to_path_buf()
-    } else {
-        // dir_part may be "foo/" relative to cwd
-        Path::new(dir_part).to_path_buf()
-    };
-
-    let read_dir = if dir_to_read.exists() && dir_to_read.is_dir() {
-        fs::read_dir(&dir_to_read)
-    } else {
-        // try to interpret full token as a directory (e.g. "foo/" where foo doesn't exist yet)
-        fs::read_dir(".")
-    };
-
+fn list_dir_matches(dir: &str, prefix: &str) -> io::Result<Vec<String>> {
     let mut matches = Vec::new();
-    if let Ok(entries) = read_dir {
-        for entry in entries.flatten() {
-            if let Ok(name_os) = entry.file_name().into_string() {
-                if name_os.starts_with(prefix) {
-                    let mut candidate = format!("{}{}", dir_part, name_os);
-                    // add trailing slash if directory
-                    if entry.path().is_dir() {
-                        candidate.push('/');
+    let entries = fs::read_dir(dir)?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(prefix) {
+            if entry.path().is_dir() {
+                matches.push(format!("{}/", name));
+            } else {
+                matches.push(name);
+            }
+        }
+    }
+    matches.sort();
+    Ok(matches)
+}
+
+fn list_path_commands(prefix: &str) -> io::Result<Vec<String>> {
+    let mut matches = Vec::new();
+    if let Ok(path_var) = env::var("PATH") {
+        for dir in path_var.split(':') {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with(prefix) {
+                        #[cfg(unix)]
+                        {
+                            if let Ok(meta) = entry.metadata() {
+                                if meta.permissions().mode() & 0o111 != 0 {
+                                    matches.push(name);
+                                }
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            matches.push(name);
+                        }
                     }
-                    matches.push(candidate);
                 }
             }
         }
@@ -455,52 +481,16 @@ fn common_prefix(strings: &[String]) -> String {
     if strings.is_empty() {
         return String::new();
     }
-    let mut prefix = strings[0].clone();
-    for s in strings.iter().skip(1) {
-        let mut new_pref = String::new();
-        for (a, b) in prefix.chars().zip(s.chars()) {
-            if a == b {
-                new_pref.push(a);
-            } else {
-                break;
-            }
-        }
-        prefix = new_pref;
-        if prefix.is_empty() {
-            break;
-        }
+    let first = &strings[0];
+    let mut prefix_len = first.len();
+    for s in &strings[1..] {
+        prefix_len = prefix_len.min(
+            first
+                .chars()
+                .zip(s.chars())
+                .take_while(|(a, b)| a == b)
+                .count(),
+        );
     }
-    prefix
-}
-
-fn list_path_commands(prefix: &str) -> io::Result<Vec<String>> {
-    let mut cmds = Vec::new();
-    if let Ok(pathvar) = env::var("PATH") {
-        for p in env::split_paths(&pathvar) {
-            if let Ok(entries) = fs::read_dir(p) {
-                for e in entries.flatten() {
-                    if let Ok(name) = e.file_name().into_string() {
-                        if name.starts_with(prefix) {
-                            #[cfg(unix)]
-                            {
-                                if let Ok(meta) = e.metadata() {
-                                    if meta.is_file() && (meta.permissions().mode() & 0o111 != 0) {
-                                        cmds.push(name.clone());
-                                    }
-                                }
-                            }
-                            #[cfg(not(unix))]
-                            {
-                                // on non-unix just include the name
-                                cmds.push(name.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    cmds.sort();
-    cmds.dedup();
-    Ok(cmds)
+    first.chars().take(prefix_len).collect()
 }
