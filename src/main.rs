@@ -9,6 +9,7 @@ mod input;
 mod shell;
 mod variables;
 mod jobs;
+mod pipes;
 
 fn print_help() {
     println!("rshell - custom shell");

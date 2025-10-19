@@ -375,35 +375,28 @@ impl LineEditor {
     }
 
     fn show_completions(&self, matches: &[String], prompt: &str) -> io::Result<()> {
-        let mut stdout = io::stdout();
-        
-        // Print newline and show all matches in columns
-        execute!(stdout, Print("\r\n"))?;
-        
-        for (i, m) in matches.iter().enumerate() {
-            print!("{:<20}", m);
-            if (i + 1) % 4 == 0 {
-                println!();
-            }
-        }
-        if matches.len() % 4 != 0 {
-            println!();
-        }
-        
-        // Redraw the prompt and current buffer
-        execute!(
-            stdout,
-            Print(prompt),
-            Print(&self.buffer)
-        )?;
-        
-        let prompt_len = prompt.chars().count();
-        let target_col = (prompt_len + self.cursor_pos) as u16;
-        execute!(stdout, cursor::MoveToColumn(target_col))?;
-        stdout.flush()?;
-        
-        Ok(())
+    let mut stdout = io::stdout();
+    
+    // Clear current input line
+    execute!(stdout, cursor::MoveToColumn(0))?;
+    execute!(stdout, terminal::Clear(terminal::ClearType::CurrentLine))?;
+
+    // Print completions followed by a blank line for separation
+    if !matches.is_empty() {
+        let output = matches.join("    ");
+        println!("{}", output);
     }
+
+    // Carriage return + newline to ensure we're at start of next line
+    print!("\r\n{}{}", prompt, &self.buffer);
+    
+    // Move cursor to correct position
+    let total_pos = prompt.chars().count() + self.cursor_pos;
+    execute!(stdout, cursor::MoveToColumn(total_pos as u16))?;
+    
+    stdout.flush()?;
+    Ok(())
+}
 
     fn byte_index_at_char_pos(&self, char_pos: usize) -> usize {
         self.buffer
