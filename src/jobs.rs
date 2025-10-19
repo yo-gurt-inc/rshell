@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::process::Child;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-
+// src/jobs.rs
+#[allow(dead_code)]
 pub enum JobStatus {
     Running,
     Stopped,
