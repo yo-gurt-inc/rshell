@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
+use std::io::{Read, Write};
 
 #[derive(Debug)]
 pub enum Command {
@@ -29,28 +30,39 @@ pub enum Command {
 }
 
 impl Command {
+    /// Parse command string with support for quotes and parentheses
     pub fn parse(input: &str) -> Option<Self> {
         let input = input.trim();
         if input.is_empty() {
             return None;
         }
 
+        // Handle subshells/parentheses first
+        let input = match Self::expand_subshells(input) {
+            Ok(expanded) => expanded,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return None;
+            }
+        };
+
         let background = input.ends_with('&');
         let input = if background {
             input[..input.len() - 1].trim()
         } else {
-            input
+            input.as_str()
         };
 
-        let parts: Vec<&str> = input.split_whitespace().collect();
+        // Parse with quote handling
+        let parts = Self::parse_args(input);
         if parts.is_empty() {
             return None;
         }
 
-        let cmd = parts[0];
-        let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+        let cmd = &parts[0];
+        let args: Vec<String> = parts[1..].to_vec();
 
-        match cmd {
+        match cmd.as_str() {
             "cd" => Some(Command::Cd(args.first().cloned())),
             "pwd" => Some(Command::Pwd),
             "echo" => Some(Command::Echo(args)),
@@ -101,11 +113,153 @@ impl Command {
                 Some(Command::Bg(job_id))
             }
             _ => Some(Command::External {
-                program: cmd.to_string(),
+                program: cmd.clone(),
                 args,
                 background,
             }),
         }
+    }
+
+    /// Parse arguments with quote handling
+    fn parse_args(input: &str) -> Vec<String> {
+        let mut args = Vec::new();
+        let mut current_arg = String::new();
+        let mut in_quotes = false;
+        let mut quote_char = ' ';
+        let mut chars = input.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            match c {
+                // Opening quote
+                '"' | '\'' if !in_quotes => {
+                    in_quotes = true;
+                    quote_char = c;
+                }
+                // Closing quote
+                '"' | '\'' if in_quotes && c == quote_char => {
+                    in_quotes = false;
+                    quote_char = ' ';
+                }
+                // Space outside quotes = separator
+                ' ' if !in_quotes => {
+                    if !current_arg.is_empty() {
+                        args.push(current_arg.clone());
+                        current_arg.clear();
+                    }
+                }
+                // Escape sequences
+                '\\' if chars.peek().is_some() => {
+                    let next = chars.next().unwrap();
+                    current_arg.push(match next {
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        '\\' => '\\',
+                        '"' => '"',
+                        '\'' => '\'',
+                        _ => next,
+                    });
+                }
+                // Regular character
+                _ => current_arg.push(c),
+            }
+        }
+
+        // Push last argument
+        if !current_arg.is_empty() {
+            args.push(current_arg);
+        }
+
+        // Handle unclosed quotes
+        if in_quotes {
+            eprintln!("Warning: unclosed quote");
+        }
+
+        args
+    }
+
+    /// Expand subshells (commands in parentheses)
+    fn expand_subshells(input: &str) -> Result<String, String> {
+        let mut result = String::new();
+        let mut chars = input.chars().peekable();
+        let mut depth = 0;
+        let mut subshell = String::new();
+
+        while let Some(c) = chars.next() {
+            match c {
+                '(' => {
+                    depth += 1;
+                    if depth > 1 {
+                        subshell.push(c);
+                    }
+                }
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // Execute subshell and capture output
+                        let output = Self::execute_subshell(&subshell)?;
+                        result.push_str(&output);
+                        subshell.clear();
+                    } else if depth > 0 {
+                        subshell.push(c);
+                    } else {
+                        return Err("Unmatched closing parenthesis".to_string());
+                    }
+                }
+                _ => {
+                    if depth > 0 {
+                        subshell.push(c);
+                    } else {
+                        result.push(c);
+                    }
+                }
+            }
+        }
+
+        if depth > 0 {
+            return Err("Unmatched opening parenthesis".to_string());
+        }
+
+        Ok(result)
+    }
+
+    /// Execute a subshell command and return its output
+    fn execute_subshell(cmd: &str) -> Result<String, String> {
+        let cmd = cmd.trim();
+        if cmd.is_empty() {
+            return Ok(String::new());
+        }
+
+        // Parse the subshell command
+        let args = Self::parse_args(cmd);
+        if args.is_empty() {
+            return Ok(String::new());
+        }
+
+        let program = &args[0];
+        let cmd_args = &args[1..];
+
+        // Execute command and capture output
+        let output = ProcessCommand::new(program)
+            .args(cmd_args)
+            .output()
+            .map_err(|e| format!("Failed to execute '{}': {}", program, e))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "'{}' failed with exit code {}",
+                program,
+                output.status.code().unwrap_or(-1)
+            ));
+        }
+
+        // Return stdout, trimming trailing newline
+        let mut result = String::from_utf8_lossy(&output.stdout).to_string();
+        if result.ends_with('\n') {
+            result.pop();
+        }
+
+        Ok(result)
     }
 
     pub fn execute(&self, job_manager: &mut JobManager) -> bool {
@@ -149,7 +303,11 @@ impl Command {
                 println!("  fg [job_id]     - Bring job to foreground");
                 println!("  bg [job_id]     - Resume job in background");
                 println!("  exit            - Exit shell");
-                println!("\nAdd '&' at the end of a command to run it in background");
+                println!("\nFeatures:");
+                println!("  - Quotes: echo \"hello world\" or echo 'single quotes'");
+                println!("  - Subshells: echo $(pwd) or echo $(ls)");
+                println!("  - Background: command &");
+                println!("  - Pipes: command1 | command2");
             }
 
             Command::Ls(path) => {
@@ -164,16 +322,16 @@ impl Command {
                                 (name, is_dir)
                             })
                             .collect();
-                        
+
                         items.sort_by(|a, b| a.0.cmp(&b.0));
-                        
+
                         for (i, (name, is_dir)) in items.iter().enumerate() {
                             if *is_dir {
                                 print!("\x1b[34m{:<20}\x1b[0m", name);
                             } else {
                                 print!("{:<20}", name);
                             }
-                            
+
                             if (i + 1) % 4 == 0 {
                                 println!();
                             }
@@ -239,7 +397,6 @@ impl Command {
                         }
                         Err(e) => {
                             eprintln!("{}: {}", program, e);
-                            // Don't exit the shell on error
                         }
                     }
                 } else {
@@ -253,7 +410,6 @@ impl Command {
                         }
                         Err(e) => {
                             eprintln!("{}: {}", program, e);
-                            // Don't exit the shell on error
                         }
                     }
                 }
