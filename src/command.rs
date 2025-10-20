@@ -55,7 +55,14 @@ impl Command {
 
         // Parse with quote handling
         let parts = Self::parse_args(input);
+        
+        // Empty command (e.g., just quotes: "" or '')
         if parts.is_empty() {
+            return None;
+        }
+        
+        // Handle lone backslash or other edge cases
+        if parts.len() == 1 && (parts[0] == "\\" || parts[0].is_empty()) {
             return None;
         }
 
@@ -121,15 +128,36 @@ impl Command {
     }
 
     /// Parse arguments with quote handling
-    fn parse_args(input: &str) -> Vec<String> {
+    /// Returns (args, needs_continuation)
+    pub fn parse_args_with_state(input: &str) -> (Vec<String>, bool) {
         let mut args = Vec::new();
         let mut current_arg = String::new();
         let mut in_quotes = false;
         let mut quote_char = ' ';
         let mut chars = input.chars().peekable();
+        let mut escape_next = false;
 
         while let Some(c) = chars.next() {
+            if escape_next {
+                // Handle escaped character
+                current_arg.push(match c {
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    '\\' => '\\',
+                    '"' => '"',
+                    '\'' => '\'',
+                    _ => c,
+                });
+                escape_next = false;
+                continue;
+            }
+
             match c {
+                // Escape character
+                '\\' if in_quotes || chars.peek().is_some() => {
+                    escape_next = true;
+                }
                 // Opening quote
                 '"' | '\'' if !in_quotes => {
                     in_quotes = true;
@@ -140,25 +168,16 @@ impl Command {
                     in_quotes = false;
                     quote_char = ' ';
                 }
+                // Newline inside quotes - keep it
+                '\n' if in_quotes => {
+                    current_arg.push(c);
+                }
                 // Space outside quotes = separator
                 ' ' if !in_quotes => {
                     if !current_arg.is_empty() {
                         args.push(current_arg.clone());
                         current_arg.clear();
                     }
-                }
-                // Escape sequences
-                '\\' if chars.peek().is_some() => {
-                    let next = chars.next().unwrap();
-                    current_arg.push(match next {
-                        'n' => '\n',
-                        't' => '\t',
-                        'r' => '\r',
-                        '\\' => '\\',
-                        '"' => '"',
-                        '\'' => '\'',
-                        _ => next,
-                    });
                 }
                 // Regular character
                 _ => current_arg.push(c),
@@ -170,12 +189,20 @@ impl Command {
             args.push(current_arg);
         }
 
-        // Handle unclosed quotes
-        if in_quotes {
-            eprintln!("Warning: unclosed quote");
-        }
+        // Return whether we need continuation (unclosed quotes)
+        (args, in_quotes)
+    }
 
-        args
+    /// Parse arguments with quote handling (original function)
+    fn parse_args(input: &str) -> Vec<String> {
+        Self::parse_args_with_state(input).0
+    }
+
+    /// Check if input needs line continuation (only for unclosed quotes)
+    pub fn needs_line_continuation(input: &str) -> bool {
+        // Check for unclosed quotes only
+        let (_, in_quotes) = Self::parse_args_with_state(input);
+        in_quotes
     }
 
     /// Expand subshells (commands in parentheses)
