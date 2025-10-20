@@ -7,4 +7,5 @@ edition = "2021"
 crossterm = "0.27"
 libc = "0.2.177"
 nix = "0.30.1"
+whoami = "1.6.1"
 

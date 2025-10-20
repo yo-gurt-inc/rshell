@@ -336,39 +336,40 @@ impl Command {
                 println!("  - Background: command &");
                 println!("  - Pipes: command1 | command2");
             }
-
+            
             Command::Ls(path) => {
-                let target = path.as_deref().unwrap_or(".");
-                match fs::read_dir(target) {
-                    Ok(entries) => {
-                        let mut items: Vec<_> = entries
-                            .flatten()
-                            .map(|entry| {
-                                let name = entry.file_name().to_string_lossy().to_string();
-                                let is_dir = entry.path().is_dir();
-                                (name, is_dir)
-                            })
-                            .collect();
+    let target = path.as_deref().unwrap_or(".");
+    match fs::read_dir(target) {
+        Ok(entries) => {
+            let mut items: Vec<_> = entries
+                .flatten()
+                .map(|entry| {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let is_dir = entry.path().is_dir();
+                    (name, is_dir)
+                })
+                .filter(|(name, _)| !name.starts_with('.')) // Filter out dotfiles
+                .collect();
 
-                        items.sort_by(|a, b| a.0.cmp(&b.0));
+            items.sort_by(|a, b| a.0.cmp(&b.0));
 
-                        for (i, (name, is_dir)) in items.iter().enumerate() {
-                            if *is_dir {
-                                print!("\x1b[34m{:<20}\x1b[0m", name);
-                            } else {
-                                print!("{:<20}", name);
-                            }
+            for (i, (name, is_dir)) in items.iter().enumerate() {
+                if *is_dir {
+                    print!("\x1b[34m{:<20}\x1b[0m", name);
+                } else {
+                    print!("{:<20}", name);
+                }
 
-                            if (i + 1) % 4 == 0 {
-                                println!();
-                            }
-                        }
-                        println!();
-                    }
-                    Err(e) => eprintln!("ls: {}", e),
+                if (i + 1) % 4 == 0 {
+                    println!();
                 }
             }
-
+            println!();
+        }
+        Err(e) => eprintln!("ls: {}", e),
+    }
+}
+            
             Command::Cat(file) => match fs::read_to_string(file) {
                 Ok(contents) => print!("{}", contents),
                 Err(e) => eprintln!("cat: {}: {}", file, e),
