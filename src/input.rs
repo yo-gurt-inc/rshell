@@ -181,6 +181,95 @@ impl LineEditor {
                         }
                     }
 
+                    // Ctrl+A - Move to start of line
+                    KeyEvent {
+                        code: KeyCode::Char('a'),
+                        modifiers: KeyModifiers::CONTROL,
+                        ..
+                    } => {
+                        self.cursor_pos = 0;
+                        self.redraw(prompt)?;
+                    }
+
+                    // Ctrl+E - Move to end of line  
+                    KeyEvent {
+                        code: KeyCode::Char('e'),
+                        modifiers: KeyModifiers::CONTROL,
+                        ..
+                    } => {
+                        self.cursor_pos = self.buffer.chars().count();
+                        self.redraw(prompt)?;
+                    }
+
+                    // Ctrl+K - Kill line from cursor to end
+                    KeyEvent {
+                        code: KeyCode::Char('k'),
+                        modifiers: KeyModifiers::CONTROL,
+                        ..
+                    } => {
+                        self.buffer.truncate(self.byte_index_at_char_pos(self.cursor_pos));
+                        self.redraw(prompt)?;
+                    }
+
+                    // Ctrl+U - Kill line from start to cursor
+                    KeyEvent {
+                        code: KeyCode::Char('u'),
+                        modifiers: KeyModifiers::CONTROL,
+                        ..
+                    } => {
+                        let bytes_to_remove = self.byte_index_at_char_pos(self.cursor_pos);
+                        self.buffer.drain(0..bytes_to_remove);
+                        self.cursor_pos = 0;
+                        self.redraw(prompt)?;
+                    }
+
+                    // Ctrl+W - Delete word before cursor
+                    KeyEvent {
+                        code: KeyCode::Char('w'),
+                        modifiers: KeyModifiers::CONTROL,
+                        ..
+                    } => {
+                        if self.cursor_pos > 0 {
+                            let mut word_end = self.cursor_pos;
+                            
+                            // Skip whitespace backwards
+                            while word_end > 0 {
+                                let prev_char = self.buffer.chars().nth(word_end - 1).unwrap();
+                                if !prev_char.is_whitespace() {
+                                    break;
+                                }
+                                word_end -= 1;
+                            }
+                            
+                            // Find start of word
+                            let mut word_start = word_end;
+                            while word_start > 0 {
+                                let prev_char = self.buffer.chars().nth(word_start - 1).unwrap();
+                                if prev_char.is_whitespace() {
+                                    break;
+                                }
+                                word_start -= 1;
+                            }
+                            
+                            // Remove the word
+                            let byte_start = self.byte_index_at_char_pos(word_start);
+                            let byte_end = self.byte_index_at_char_pos(word_end);
+                            self.buffer.drain(byte_start..byte_end);
+                            self.cursor_pos = word_start;
+                            self.redraw(prompt)?;
+                        }
+                    }
+
+                    // Ctrl+L - Clear screen
+                    KeyEvent {
+                        code: KeyCode::Char('l'),
+                        modifiers: KeyModifiers::CONTROL,
+                        ..
+                    } => {
+                        execute!(io::stdout(), terminal::Clear(ClearType::All))?;
+                        self.redraw(prompt)?;
+                    }
+
                     // Ctrl+C - cancel current line
                     KeyEvent {
                         code: KeyCode::Char('c'),
@@ -205,6 +294,34 @@ impl LineEditor {
                             let _ = terminal::disable_raw_mode();
                             println!();
                             std::process::exit(0);
+                        }
+                    }
+
+                    // Ctrl+Y - Paste (yank) killed text (basic implementation)
+                    KeyEvent {
+                        code: KeyCode::Char('y'),
+                        modifiers: KeyModifiers::CONTROL,
+                        ..
+                    } => {
+                        // For now, just beep since we don't have kill ring implemented
+                        execute!(stdout, Print("\x07"))?; // Bell character
+                    }
+
+                    // Ctrl+T - Transpose characters
+                    KeyEvent {
+                        code: KeyCode::Char('t'),
+                        modifiers: KeyModifiers::CONTROL,
+                        ..
+                    } => {
+                        if self.cursor_pos > 0 && self.cursor_pos < self.buffer.chars().count() {
+                            let left_idx = self.byte_index_at_char_pos(self.cursor_pos - 1);
+                            let right_idx = self.byte_index_at_char_pos(self.cursor_pos);
+                            let left_char = self.buffer.chars().nth(self.cursor_pos - 1).unwrap();
+                            let right_char = self.buffer.chars().nth(self.cursor_pos).unwrap();
+                            
+                            self.buffer.replace_range(left_idx..right_idx, &format!("{}{}", right_char, left_char));
+                            self.cursor_pos += 1;
+                            self.redraw(prompt)?;
                         }
                     }
 
@@ -259,7 +376,7 @@ impl LineEditor {
             .rfind(|c: char| c.is_whitespace())
             .map(|i| i + 1)
             .unwrap_or(0);
-        
+
         let token_start_char = self.buffer[..token_start].chars().count();
         let token = &self.buffer[token_start..self.byte_index_at_char_pos(self.cursor_pos)];
 
@@ -274,14 +391,14 @@ impl LineEditor {
                 if matches.is_empty() {
                     return Ok(false);
                 }
-                
+
                 // Show all matches if multiple
                 if matches.len() > 1 {
                     self.show_completions(&matches, prompt)?;
                 }
-                
+
                 let common = common_prefix(&matches);
-                
+
                 // Replace with common prefix
                 if common.len() > prefix.len() {
                     self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
@@ -294,7 +411,7 @@ impl LineEditor {
                     self.cursor_pos = token_start_char + full_completion.chars().count();
                     return Ok(true);
                 }
-                
+
                 // If only one match, complete it fully
                 if matches.len() == 1 {
                     let first = &matches[0];
@@ -308,7 +425,7 @@ impl LineEditor {
                     self.cursor_pos = token_start_char + full_completion.chars().count();
                     return Ok(true);
                 }
-                
+
                 return Ok(false);
             }
         } else {
@@ -319,11 +436,11 @@ impl LineEditor {
                 if matches.is_empty() {
                     return Ok(false);
                 }
-                
+
                 if matches.len() > 1 {
                     self.show_completions(&matches, prompt)?;
                 }
-                
+
                 let common = common_prefix(&matches);
                 if common.len() > token.len() {
                     self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
@@ -331,7 +448,7 @@ impl LineEditor {
                     self.cursor_pos = token_start_char + common.chars().count();
                     return Ok(true);
                 }
-                
+
                 if matches.len() == 1 {
                     let first = &matches[0];
                     self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
@@ -339,7 +456,7 @@ impl LineEditor {
                     self.cursor_pos = token_start_char + first.chars().count();
                     return Ok(true);
                 }
-                
+
                 return Ok(false);
             } else {
                 // not first token: filename completion in CWD by default
@@ -347,11 +464,11 @@ impl LineEditor {
                 if matches.is_empty() {
                     return Ok(false);
                 }
-                
+
                 if matches.len() > 1 {
                     self.show_completions(&matches, prompt)?;
                 }
-                
+
                 let common = common_prefix(&matches);
                 if common.len() > token.len() {
                     self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
@@ -359,7 +476,7 @@ impl LineEditor {
                     self.cursor_pos = token_start_char + common.chars().count();
                     return Ok(true);
                 }
-                
+
                 if matches.len() == 1 {
                     let first = &matches[0];
                     self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
@@ -367,7 +484,7 @@ impl LineEditor {
                     self.cursor_pos = token_start_char + first.chars().count();
                     return Ok(true);
                 }
-                
+
                 return Ok(false);
             }
         }
@@ -375,28 +492,28 @@ impl LineEditor {
     }
 
     fn show_completions(&self, matches: &[String], prompt: &str) -> io::Result<()> {
-    let mut stdout = io::stdout();
-    
-    // Clear current input line
-    execute!(stdout, cursor::MoveToColumn(0))?;
-    execute!(stdout, terminal::Clear(terminal::ClearType::CurrentLine))?;
+        let mut stdout = io::stdout();
 
-    // Print completions followed by a blank line for separation
-    if !matches.is_empty() {
-        let output = matches.join("    ");
-        println!("{}", output);
+        // Clear current input line
+        execute!(stdout, cursor::MoveToColumn(0))?;
+        execute!(stdout, terminal::Clear(terminal::ClearType::CurrentLine))?;
+
+        // Print completions followed by a blank line for separation
+        if !matches.is_empty() {
+            let output = matches.join("    ");
+            println!("{}", output);
+        }
+
+        // Carriage return + newline to ensure we're at start of next line
+        print!("\r\n{}{}", prompt, &self.buffer);
+
+        // Move cursor to correct position
+        let total_pos = prompt.chars().count() + self.cursor_pos;
+        execute!(stdout, cursor::MoveToColumn(total_pos as u16))?;
+
+        stdout.flush()?;
+        Ok(())
     }
-
-    // Carriage return + newline to ensure we're at start of next line
-    print!("\r\n{}{}", prompt, &self.buffer);
-    
-    // Move cursor to correct position
-    let total_pos = prompt.chars().count() + self.cursor_pos;
-    execute!(stdout, cursor::MoveToColumn(total_pos as u16))?;
-    
-    stdout.flush()?;
-    Ok(())
-}
 
     fn byte_index_at_char_pos(&self, char_pos: usize) -> usize {
         self.buffer

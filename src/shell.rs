@@ -32,6 +32,13 @@ impl Shell {
     pub fn run(&mut self) {
         println!("Type 'help' for available commands\n");
 
+        // Simple signal handling - ignore Ctrl+C in shell process
+        #[cfg(unix)]
+        unsafe {
+            use libc::{signal, SIGINT, SIG_IGN};
+            signal(SIGINT, SIG_IGN);
+        }
+
         while self.running {
             // Update background jobs
             self.job_manager.update_jobs();
@@ -54,7 +61,7 @@ impl Shell {
                     self.history.add(trimmed.clone());
 
                     if trimmed.contains('|') {
-                        // Pipeline detected
+                        // Pipeline detected - parse_pipeline returns Vec<Vec<String>>
                         let commands = parse_pipeline(&trimmed);
 
                         if background {
@@ -66,6 +73,7 @@ impl Shell {
                                 }
                             });
                         } else {
+                            // Run pipeline in foreground
                             if let Err(e) = run_pipeline(commands) {
                                 eprintln!("Pipeline error: {}", e);
                             }
@@ -78,6 +86,7 @@ impl Shell {
                                 Command::Jobs => self.list_jobs(),
                                 Command::Fg(job_id) => self.foreground_job(job_id),
                                 Command::Bg(job_id) => self.background_job(job_id),
+                                Command::Exit => self.running = false,
                                 _ => {
                                     // Execute external or builtin command
                                     self.running = cmd.execute(&mut self.job_manager);
