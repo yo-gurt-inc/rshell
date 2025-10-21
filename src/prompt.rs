@@ -1,14 +1,11 @@
 use std::env;
+use colored::*;
 
-pub struct Prompt {
-    prefix: String,
-}
+pub struct Prompt;
 
 impl Prompt {
     pub fn new() -> Self {
-        Self {
-            prefix: String::from("#"),
-        }
+        Self
     }
 
     pub fn get_string(&self) -> String {
@@ -31,11 +28,14 @@ impl Prompt {
         let hostname = env::var("HOSTNAME")
             .unwrap_or_else(|_| whoami::hostname());
 
-        format!("{}@{}:{} {} ", username, hostname, cwd, self.prefix)
-    }
+        let prefix = if username == "root" { "#" } else { "$" };
 
-    #[allow(dead_code)]
-    pub fn display(&self) {
-        print!("{}", self.get_string());
+        format!(
+            "{}@{}:{} {} ",
+            username.green(),
+            hostname.green(),
+            cwd.blue(),
+            prefix.white()
+        )
     }
 }

@@ -1,4 +1,5 @@
 use std::env;
+use std::io::{self, Write};
 use crate::command::Command;
 use crate::prompt::Prompt;
 use crate::history::History;
@@ -32,12 +33,17 @@ impl Shell {
     /// Read input with line continuation support
     fn read_input_with_continuation(&mut self) -> Result<String, std::io::Error> {
         let mut full_input = String::new();
-        let mut prompt_str = self.prompt.get_string();
-        let continuation_prompt = "> ";
         let mut first_line = true;
 
         loop {
-            let line = self.editor.read_line(&prompt_str, &mut self.history)?;
+            // Let LineEditor handle the prompt printing completely
+            let prompt = if first_line {
+                self.prompt.get_string()
+            } else {
+                "> ".to_string()
+            };
+
+            let line = self.editor.read_line(&prompt, &mut self.history)?;
 
             // Check for line continuation BEFORE adding to full_input
             let line_trimmed = line.trim_end();
@@ -59,7 +65,6 @@ impl Shell {
                 }
                 full_input.push_str(without_backslash);
                 first_line = false;
-                prompt_str = continuation_prompt.to_string();
                 continue;
             }
 
@@ -72,8 +77,7 @@ impl Shell {
 
             // Check if we need continuation (unclosed quotes)
             if Command::needs_line_continuation(&full_input) {
-                // Use continuation prompt for next line
-                prompt_str = continuation_prompt.to_string();
+                // Continue to next line
                 continue;
             }
 
