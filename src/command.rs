@@ -3,7 +3,6 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
-use std::io::{Read, Write};
 
 #[derive(Debug)]
 pub enum Command {

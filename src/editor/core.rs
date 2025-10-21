@@ -7,38 +7,8 @@ use crossterm::{
     terminal::{self, ClearType},
 };
 use std::io::{self, Write};
-use std::sync::Once;
-use std::fs;
-use std::env;
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
-static SET_PANIC_HOOK: Once = Once::new();
-
-struct RawModeGuard;
-
-impl RawModeGuard {
-    pub fn enter() -> io::Result<Self> {
-        // install panic hook once to restore terminal on panic
-        SET_PANIC_HOOK.call_once(|| {
-            let prev = std::panic::take_hook();
-            std::panic::set_hook(Box::new(move |info| {
-                let _ = terminal::disable_raw_mode();
-                prev(info);
-            }));
-        });
-
-        terminal::enable_raw_mode()?;
-        Ok(Self)
-    }
-}
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let _ = terminal::disable_raw_mode();
-    }
-}
+use super::completion::*;
+use super::raw_mode::RawModeGuard;
 
 pub struct LineEditor {
     buffer: String,
@@ -557,85 +527,4 @@ impl LineEditor {
             .map(|(i, _)| i)
             .unwrap_or(self.buffer.len())
     }
-}
-
-// --- helper functions ------------------------------------------------------
-
-fn split_dir_prefix(path: &str) -> Option<(String, String)> {
-    if let Some(idx) = path.rfind('/') {
-        let dir = if idx == 0 {
-            "/".to_string()
-        } else {
-            path[..idx].to_string()
-        };
-        let prefix = path[idx + 1..].to_string();
-        Some((dir, prefix))
-    } else {
-        None
-    }
-}
-
-fn list_dir_matches(dir: &str, prefix: &str) -> io::Result<Vec<String>> {
-    let mut matches = Vec::new();
-    let entries = fs::read_dir(dir)?;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(prefix) {
-            if entry.path().is_dir() {
-                matches.push(format!("{}/", name));
-            } else {
-                matches.push(name);
-            }
-        }
-    }
-    matches.sort();
-    Ok(matches)
-}
-
-fn list_path_commands(prefix: &str) -> io::Result<Vec<String>> {
-    let mut matches = Vec::new();
-    if let Ok(path_var) = env::var("PATH") {
-        for dir in path_var.split(':') {
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with(prefix) {
-                        #[cfg(unix)]
-                        {
-                            if let Ok(meta) = entry.metadata() {
-                                if meta.permissions().mode() & 0o111 != 0 {
-                                    matches.push(name);
-                                }
-                            }
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            matches.push(name);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    matches.sort();
-    matches.dedup();
-    Ok(matches)
-}
-
-fn common_prefix(strings: &[String]) -> String {
-    if strings.is_empty() {
-        return String::new();
-    }
-    let first = &strings[0];
-    let mut prefix_len = first.len();
-    for s in &strings[1..] {
-        prefix_len = prefix_len.min(
-            first
-                .chars()
-                .zip(s.chars())
-                .take_while(|(a, b)| a == b)
-                .count(),
-        );
-    }
-    first.chars().take(prefix_len).collect()
 }

@@ -5,7 +5,7 @@ use std::time::Instant;
 mod command;
 mod prompt;
 mod history;
-mod input;
+mod editor;  // Changed from 'input' to 'editor'
 mod shell;
 mod variables;
 mod jobs;
@@ -37,11 +37,11 @@ fn main() {
         process::exit(0);
     }
     let start = Instant::now();
-    
+
     let mut shell = shell::Shell::new();
-    
+
     eprintln!("DEBUG: Startup took {:?}", start.elapsed());
-    
+
     shell.run();
 
 }

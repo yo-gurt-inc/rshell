@@ -24,14 +24,14 @@ impl Prompt {
         let username = env::var("USER")
             .or_else(|_| env::var("USERNAME"))
             .unwrap_or_else(|_| String::from("unknown"));
-        
-        let hostname = env::var("HOSTNAME")
-            .unwrap_or_else(|_| whoami::hostname());
 
-        let prefix = if username == "root" { "#" } else { "$" };
+        let hostname = env::var("HOSTNAME")
+            .unwrap_or_else(|_| whoami::fallible::hostname().unwrap_or_else(|_| "localhost".to_string()));
+
+        let prefix = if username == "root" { "# " } else { "$ " };
 
         format!(
-            "{}@{}:{} {} ",
+            "{}@{}:{} {}",
             username.green(),
             hostname.green(),
             cwd.blue(),

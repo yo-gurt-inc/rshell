@@ -1,9 +1,8 @@
 use std::env;
-use std::io::{self, Write};
 use crate::command::Command;
 use crate::prompt::Prompt;
 use crate::history::History;
-use crate::input::LineEditor;
+use crate::editor::LineEditor;
 use crate::jobs::JobManager;
 use crate::pipes::{parse_pipeline, run_pipeline};
 
