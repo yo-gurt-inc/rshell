@@ -402,12 +402,151 @@ impl LineEditor {
         length
     }
 
-    // ... (rest of your methods) ...
+    // --- completion helpers ------------------------------------------------
+
     fn handle_tab_completion(&mut self, prompt: &str) -> io::Result<bool> {
+        // find token start (last whitespace before cursor)
+        let token_start = self.buffer[..self.byte_index_at_char_pos(self.cursor_pos)]
+            .rfind(|c: char| c.is_whitespace())
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        let token_start_char = self.buffer[..token_start].chars().count();
+        let token = &self.buffer[token_start..self.byte_index_at_char_pos(self.cursor_pos)];
+
+        if token.is_empty() {
+            return Ok(false);
+        }
+
+        // if token looks like a path (contains '/'), do path completion
+        if token.contains('/') {
+            if let Some((dir, prefix)) = split_dir_prefix(token) {
+                let matches = list_dir_matches(&dir, &prefix)?;
+                if matches.is_empty() {
+                    return Ok(false);
+                }
+
+                // Show all matches if multiple
+                if matches.len() > 1 {
+                    self.show_completions(&matches, prompt)?;
+                }
+
+                let common = common_prefix(&matches);
+
+                // Replace with common prefix
+                if common.len() > prefix.len() {
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    let full_completion = if dir == "." {
+                        common.clone()
+                    } else {
+                        format!("{}/{}", dir, common)
+                    };
+                    self.buffer.insert_str(token_start, &full_completion);
+                    self.cursor_pos = token_start_char + full_completion.chars().count();
+                    return Ok(true);
+                }
+
+                // If only one match, complete it fully
+                if matches.len() == 1 {
+                    let first = &matches[0];
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    let full_completion = if dir == "." {
+                        first.clone()
+                    } else {
+                        format!("{}/{}", dir, first)
+                    };
+                    self.buffer.insert_str(token_start, &full_completion);
+                    self.cursor_pos = token_start_char + full_completion.chars().count();
+                    return Ok(true);
+                }
+
+                return Ok(false);
+            }
+        } else {
+            // first token -> complete executables in PATH
+            let is_first = token_start == 0;
+            if is_first {
+                let matches = list_path_commands(token)?;
+                if matches.is_empty() {
+                    return Ok(false);
+                }
+
+                if matches.len() > 1 {
+                    self.show_completions(&matches, prompt)?;
+                }
+
+                let common = common_prefix(&matches);
+                if common.len() > token.len() {
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    self.buffer.insert_str(token_start, &common);
+                    self.cursor_pos = token_start_char + common.chars().count();
+                    return Ok(true);
+                }
+
+                if matches.len() == 1 {
+                    let first = &matches[0];
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    self.buffer.insert_str(token_start, first);
+                    self.cursor_pos = token_start_char + first.chars().count();
+                    return Ok(true);
+                }
+
+                return Ok(false);
+            } else {
+                // not first token: filename completion in CWD by default
+                let matches = list_dir_matches(".", token)?;
+                if matches.is_empty() {
+                    return Ok(false);
+                }
+
+                if matches.len() > 1 {
+                    self.show_completions(&matches, prompt)?;
+                }
+
+                let common = common_prefix(&matches);
+                if common.len() > token.len() {
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    self.buffer.insert_str(token_start, &common);
+                    self.cursor_pos = token_start_char + common.chars().count();
+                    return Ok(true);
+                }
+
+                if matches.len() == 1 {
+                    let first = &matches[0];
+                    self.buffer.drain(token_start..self.byte_index_at_char_pos(self.cursor_pos));
+                    self.buffer.insert_str(token_start, first);
+                    self.cursor_pos = token_start_char + first.chars().count();
+                    return Ok(true);
+                }
+
+                return Ok(false);
+            }
+        }
         Ok(false)
     }
 
     fn show_completions(&self, matches: &[String], prompt: &str) -> io::Result<()> {
+        let mut stdout = io::stdout();
+
+        // Clear current input line
+        execute!(stdout, cursor::MoveToColumn(0))?;
+        execute!(stdout, terminal::Clear(terminal::ClearType::CurrentLine))?;
+
+        // Print completions followed by a blank line for separation
+        if !matches.is_empty() {
+            let output = matches.join("    ");
+            println!("{}", output);
+        }
+
+        // Carriage return + newline to ensure we're at start of next line
+        print!("\r\n{}{}", prompt, &self.buffer);
+
+        // Move cursor to correct position
+        let visual_prompt_len = Self::visual_length(prompt);
+        let total_chars = visual_prompt_len + self.cursor_pos;
+        execute!(stdout, cursor::MoveToColumn(total_chars as u16))?;
+
+        stdout.flush()?;
         Ok(())
     }
 
@@ -420,4 +559,83 @@ impl LineEditor {
     }
 }
 
-// ... (rest of your helper functions) ...
+// --- helper functions ------------------------------------------------------
+
+fn split_dir_prefix(path: &str) -> Option<(String, String)> {
+    if let Some(idx) = path.rfind('/') {
+        let dir = if idx == 0 {
+            "/".to_string()
+        } else {
+            path[..idx].to_string()
+        };
+        let prefix = path[idx + 1..].to_string();
+        Some((dir, prefix))
+    } else {
+        None
+    }
+}
+
+fn list_dir_matches(dir: &str, prefix: &str) -> io::Result<Vec<String>> {
+    let mut matches = Vec::new();
+    let entries = fs::read_dir(dir)?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(prefix) {
+            if entry.path().is_dir() {
+                matches.push(format!("{}/", name));
+            } else {
+                matches.push(name);
+            }
+        }
+    }
+    matches.sort();
+    Ok(matches)
+}
+
+fn list_path_commands(prefix: &str) -> io::Result<Vec<String>> {
+    let mut matches = Vec::new();
+    if let Ok(path_var) = env::var("PATH") {
+        for dir in path_var.split(':') {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with(prefix) {
+                        #[cfg(unix)]
+                        {
+                            if let Ok(meta) = entry.metadata() {
+                                if meta.permissions().mode() & 0o111 != 0 {
+                                    matches.push(name);
+                                }
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            matches.push(name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    matches.sort();
+    matches.dedup();
+    Ok(matches)
+}
+
+fn common_prefix(strings: &[String]) -> String {
+    if strings.is_empty() {
+        return String::new();
+    }
+    let first = &strings[0];
+    let mut prefix_len = first.len();
+    for s in &strings[1..] {
+        prefix_len = prefix_len.min(
+            first
+                .chars()
+                .zip(s.chars())
+                .take_while(|(a, b)| a == b)
+                .count(),
+        );
+    }
+    first.chars().take(prefix_len).collect()
+}
