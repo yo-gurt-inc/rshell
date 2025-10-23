@@ -6,7 +6,6 @@ use crate::editor::LineEditor;
 use crate::jobs::JobManager;
 use crate::pipes::{parse_pipeline, run_pipeline};
 use crate::redirects::ParsedCommand;
-use crate::heredoc;
 
 pub struct Shell {
     prompt: Prompt,
@@ -31,11 +30,13 @@ impl Shell {
         }
     }
 
+    /// Read input with line continuation support
     fn read_input_with_continuation(&mut self) -> Result<String, std::io::Error> {
         let mut full_input = String::new();
         let mut first_line = true;
 
         loop {
+            // Let LineEditor handle the prompt printing completely
             let prompt = if first_line {
                 self.prompt.get_string()
             } else {
@@ -44,36 +45,43 @@ impl Shell {
 
             let line = self.editor.read_line(&prompt, &mut self.history)?;
 
+            // Check for line continuation BEFORE adding to full_input
             let line_trimmed = line.trim_end();
             let has_trailing_backslash = line_trimmed.ends_with('\\') && {
+                // Count backslashes to ensure it's not escaped
                 let chars: Vec<char> = line_trimmed.chars().collect();
                 let mut count = 0;
                 for c in chars.iter().rev() {
                     if *c == '\\' { count += 1; } else { break; }
                 }
-                count % 2 == 1
+                count % 2 == 1 // Odd number means continuation
             };
 
             if has_trailing_backslash {
+                // Remove trailing backslash and add to input
                 let without_backslash = &line_trimmed[..line_trimmed.len() - 1];
                 if !first_line && !full_input.is_empty() {
-                    full_input.push(' ');
+                    full_input.push(' '); // Join with space
                 }
                 full_input.push_str(without_backslash);
                 first_line = false;
                 continue;
             }
 
+            // Add the line to full input
             if !first_line {
-                full_input.push('\n');
+                full_input.push('\n'); // Preserve newlines in multiline strings
             }
             full_input.push_str(&line);
             first_line = false;
 
+            // Check if we need continuation (unclosed quotes)
             if Command::needs_line_continuation(&full_input) {
+                // Continue to next line
                 continue;
             }
 
+            // Input is complete
             break;
         }
 
@@ -83,6 +91,7 @@ impl Shell {
     pub fn run(&mut self) {
         println!("Type 'help' for available commands\n");
 
+        // Simple signal handling - ignore Ctrl+C in shell process
         #[cfg(unix)]
         unsafe {
             use libc::{signal, SIGINT, SIG_IGN};
@@ -90,6 +99,7 @@ impl Shell {
         }
 
         while self.running {
+            // Update background jobs
             self.job_manager.update_jobs();
 
             match self.read_input_with_continuation() {
@@ -99,6 +109,7 @@ impl Shell {
                         continue;
                     }
 
+                    // Detect background flag for pipelines
                     let background = trimmed.ends_with('&');
                     if background {
                         trimmed = trimmed[..trimmed.len() - 1].trim().to_string();
@@ -106,21 +117,17 @@ impl Shell {
 
                     self.history.add(trimmed.clone());
 
-                    if trimmed.contains("<<") {
-                        if let Some((command, delimiter, quoted)) = heredoc::parse_heredoc(&trimmed) {
-                            if let Err(e) = heredoc::execute_heredoc(&command, &delimiter, quoted) {
-                                eprintln!("Error: {}", e);
-                            }
-                        }
-                    } else if (trimmed.contains('<') || trimmed.contains('>')) && !trimmed.contains('|') {
+                    if (trimmed.contains('<') || trimmed.contains('>')) && !trimmed.contains('|') {
                         let parsed = ParsedCommand::parse(&trimmed);
                         if let Err(e) = parsed.execute() {
                             eprintln!("Error: {}", e);
                         }
                     } else if trimmed.contains('|') {
+                        // Pipeline detected - parse_pipeline returns Vec<Vec<String>>
                         let commands = parse_pipeline(&trimmed);
 
                         if background {
+                            // Run pipeline in background thread
                             let commands_clone = commands.clone();
                             std::thread::spawn(move || {
                                 if let Err(e) = run_pipeline(commands_clone) {
@@ -128,11 +135,13 @@ impl Shell {
                                 }
                             });
                         } else {
+                            // Run pipeline in foreground
                             if let Err(e) = run_pipeline(commands) {
                                 eprintln!("Pipeline error: {}", e);
                             }
                         }
                     } else {
+                        // Single command
                         if let Some(cmd) = Command::parse(&trimmed) {
                             match cmd {
                                 Command::History => self.history.list(),
@@ -141,6 +150,7 @@ impl Shell {
                                 Command::Bg(job_id) => self.background_job(job_id),
                                 Command::Exit => self.running = false,
                                 _ => {
+                                    // Execute external or builtin command
                                     self.running = cmd.execute(&mut self.job_manager);
                                 }
                             }

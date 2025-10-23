@@ -10,6 +10,8 @@ mod shell;
 mod variables;
 mod jobs;
 mod pipes;
+mod redirects;
+mod heredoc;
 
 fn print_help() {
     println!("rshell - custom shell");

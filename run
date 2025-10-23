@@ -1,0 +1,5 @@
+cargo build --release
+
+mkdir -p bin
+cp target/release/rshell bin/
+./bin/rshell
