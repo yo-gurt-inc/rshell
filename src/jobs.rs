@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::process::Child;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-// src/jobs.rs
 #[allow(dead_code)]
 pub enum JobStatus {
     Running,
@@ -22,6 +21,7 @@ pub struct Job {
 pub struct JobManager {
     jobs: HashMap<u32, Job>,
     next_id: u32,
+    foreground_pid: Option<u32>,
 }
 
 impl JobManager {
@@ -29,13 +29,22 @@ impl JobManager {
         JobManager {
             jobs: HashMap::new(),
             next_id: 1,
+            foreground_pid: None,
         }
+    }
+
+    pub fn set_foreground_pid(&mut self, pid: Option<u32>) {
+        self.foreground_pid = pid;
+    }
+
+    pub fn get_foreground_pid(&self) -> Option<u32> {
+        self.foreground_pid
     }
 
     pub fn add_job(&mut self, pid: u32, command: String, process: Child) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        
+
         let job = Job {
             id,
             pid,
@@ -43,7 +52,7 @@ impl JobManager {
             status: JobStatus::Running,
             process: Some(process),
         };
-        
+
         self.jobs.insert(id, job);
         println!("[{}] {}", id, pid);
         id
@@ -69,7 +78,7 @@ impl JobManager {
 
     pub fn update_jobs(&mut self) {
         let mut completed = Vec::new();
-        
+
         for (id, job) in self.jobs.iter_mut() {
             if let Some(ref mut child) = job.process {
                 match child.try_wait() {
@@ -79,9 +88,7 @@ impl JobManager {
                         job.process = None;
                         completed.push(*id);
                     }
-                    Ok(None) => {
-                        // Still running
-                    }
+                    Ok(None) => {}
                     Err(e) => {
                         eprintln!("Error checking job {}: {}", id, e);
                     }

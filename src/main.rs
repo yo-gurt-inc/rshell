@@ -12,6 +12,7 @@ mod jobs;
 mod pipes;
 mod redirects;
 mod heredoc;
+mod signal_handler;
 
 fn print_help() {
     println!("rshell - custom shell");
